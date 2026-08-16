@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Not wired into any kernel Kconfig menu by default -- this driver is
+# built out-of-tree (see Makefile / README.md). If you do drop this
+# directory into a kernel tree (e.g. drivers/media/i2c/mycam004m/),
+# `source "drivers/media/i2c/mycam004m/Kconfig"` from the parent
+# Kconfig to pull this in.
+
+config VIDEO_MYCAM004M
+	tristate "MYIR MY-CAM004M quad-AHD to 4-lane MIPI CSI-2 decoder"
+	depends on I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	select REGMAP_I2C
+	help
+	  Support for the MYIR MY-CAM004M decoder board: four AHD camera
+	  inputs multiplexed onto a single 4-lane MIPI CSI-2 output as
+	  four virtual channels (one per input).
+
+	  This is a V4L2 subdevice driver for the external decoder only.
+	  It requires a CSI-2 receiver driver on the SoC side with Media
+	  Controller and virtual-channel support (e.g. TI's j721e-csi2rx
+	  on AM625/BeaglePlay) to actually produce /dev/video* capture
+	  nodes.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mycam004m.
+
+config VIDEO_MYCAM004M_FAKE
+	tristate "mycam004m fake capture test driver (static reference images)"
+	depends on VIDEO_DEV
+	select VIDEOBUF2_VMALLOC
+	help
+	  NOT part of the real mycam004m driver, and not for use on a real
+	  board. Registers 4 independent /dev/video* capture devices, each
+	  replaying one static YUYV reference frame (see
+	  tools/gen_fake_frames.py) at the real driver's target framerate.
+
+	  Exists so a calling application's V4L2 capture code can be
+	  exercised end-to-end (open, format negotiation, streaming,
+	  receiving real frame buffers) without MY-CAM004M hardware or its
+	  still-unwritten register tables -- see mycam004m-regs.h and
+	  README.md.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mycam004m-fake.

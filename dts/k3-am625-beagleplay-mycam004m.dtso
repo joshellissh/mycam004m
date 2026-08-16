@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/*
+ * MYIR MY-CAM004M - quad-AHD-camera-input to 4-lane MIPI CSI-2 decoder
+ *
+ * Connects MY-CAM004M to BeaglePlay (AM625) via J17. Modeled after the
+ * upstream single-camera reference overlays for this connector
+ * (k3-am625-beagleplay-csi2-ov5640.dtso /
+ * k3-am625-beagleplay-csi2-tevi-ov5640.dtso), extended to 4 lanes and
+ * carrying this driver's I2C GPIO reset/enable properties instead of a
+ * gpio-hog (this decoder's own driver manages those lines, unlike the
+ * ov5640 examples which tie a pin high externally via hog because the
+ * ov5640 driver itself doesn't touch it).
+ *
+ * *** Several values below are unverified placeholders -- search this
+ * file for TODO before relying on it against real hardware. ***
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+&wkup_i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	mycam004m: camera@30 {
+		compatible = "myir,mycam004m";
+
+		/*
+		 * TODO: confirm the real 7-bit I2C address on the
+		 * populated board. Per the task brief, MY-CAM004M's
+		 * address is strap-selectable (SA0/SA1) across
+		 * 0x30-0x33; 0x30 here is an unverified placeholder.
+		 * Confirm with:
+		 *   i2cdetect -y $(basename $(readlink -f \
+		 *     /sys/bus/i2c/devices/i2c-4)) 2>/dev/null || \
+		 *     i2cdetect -y 4
+		 * (wkup_i2c0 is exposed as i2c4 on BeaglePlay -- see
+		 * k3-am625-beagleplay.dts's aliases node.)
+		 */
+		reg = <0x30>;
+
+		/*
+		 * BeaglePlay's J17 camera connector only routes two
+		 * general-purpose GPIOs from the SoC (main_gpio0 pins
+		 * 11/12, labeled CSI2_CAMERA_GPIO1/2 in
+		 * k3-am625-beagleplay.dts's gpio-line-names) -- not
+		 * three. Per project decision: RESET_N and PWREN use
+		 * those two; PWRDN is left unmanaged here (assumed
+		 * either tied active on the MY-CAM004M board itself, or
+		 * unused). mycam004m.c still requests a "pwrdn-gpios"
+		 * property as fully optional, so a future carrier board
+		 * that does wire a third GPIO can add it here with no
+		 * driver change.
+		 *
+		 * TODO: confirm active-low/active-high polarity against
+		 * the MY-CAM004M schematic. GPIO_ACTIVE_LOW for RESET_N
+		 * and GPIO_ACTIVE_HIGH for PWREN are the standard
+		 * convention implied by those signal names, not yet
+		 * verified against the actual board.
+		 */
+		reset-gpios = <&main_gpio0 11 GPIO_ACTIVE_LOW>;
+		pwren-gpios = <&main_gpio0 12 GPIO_ACTIVE_HIGH>;
+
+		port {
+			mycam004m_out: endpoint {
+				remote-endpoint = <&csi2rx0_in_mycam004m>;
+				clock-lanes = <0>;
+				data-lanes = <1 2 3 4>;
+
+				/*
+				 * TODO: NOT a MY-CAM004M datasheet value.
+				 * This is a placeholder chosen only to
+				 * satisfy the throughput arithmetic for
+				 * 4x 1920x1080@30 YUYV (16 bpp) over 4
+				 * lanes:
+				 *
+				 *   min bps/lane = (1920*1080*30*16) / 4
+				 *                =~ 249 Mbps
+				 *
+				 * 400 Mbps/lane below is comfortably
+				 * above that minimum (real designs run
+				 * faster than the bare minimum for
+				 * blanking/overhead margin), but it is
+				 * NOT confirmed against real hardware.
+				 * Replace with the real value once known;
+				 * mycam004m.c has no hardcoded fallback,
+				 * so this is a DT-only fix when it's
+				 * wrong.
+				 */
+				link-frequencies = /bits/ 64 <400000000>;
+			};
+		};
+	};
+};
+
+&cdns_csi2rx0 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		csi0_port0: port@0 {
+			reg = <0>;
+			status = "okay";
+
+			csi2rx0_in_mycam004m: endpoint {
+				remote-endpoint = <&mycam004m_out>;
+				bus-type = <4>; /* CSI2 DPHY */
+				clock-lanes = <0>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+};
+
+&dphy0 {
+	status = "okay";
+};
+
+&ti_csi2rx0 {
+	status = "okay";
+};
