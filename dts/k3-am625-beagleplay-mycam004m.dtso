@@ -11,8 +11,12 @@
  * ov5640 examples which tie a pin high externally via hog because the
  * ov5640 driver itself doesn't touch it).
  *
- * *** Several values below are unverified placeholders -- search this
- * file for TODO before relying on it against real hardware. ***
+ * I2C address, GPIO polarity, and lane count/data-lanes below are
+ * confirmed against the MY-CAM004M schematic and the Nextchip N4
+ * datasheet (MY-CAM004M's decoder chip) -- see mycam004m-regs.h for the
+ * full citation trail. link-frequencies remains the one value NOT
+ * sourced from N4's own datasheet -- see its own comment below. None of
+ * this has been tested against real hardware.
  */
 
 /dts-v1/;
@@ -29,11 +33,14 @@
 		compatible = "myir,mycam004m";
 
 		/*
-		 * TODO: confirm the real 7-bit I2C address on the
-		 * populated board. Per the task brief, MY-CAM004M's
-		 * address is strap-selectable (SA0/SA1) across
-		 * 0x30-0x33; 0x30 here is an unverified placeholder.
-		 * Confirm with:
+		 * Confirmed against the MY-CAM004M schematic: it labels
+		 * the board's I2C address directly ("I2C add 0x61", the
+		 * 8-bit read address for SA0=SA1=Low), which is 7-bit
+		 * 0x30 -- also exactly matching N4's own datasheet formula
+		 * (address = 0b0110000 | (SA1<<1) | SA0, i.e. 0x30-0x33
+		 * across the 4 SA0/SA1 strap combinations). Still worth a
+		 * sanity check against a populated board if anything seems
+		 * off:
 		 *   i2cdetect -y $(basename $(readlink -f \
 		 *     /sys/bus/i2c/devices/i2c-4)) 2>/dev/null || \
 		 *     i2cdetect -y 4
@@ -55,11 +62,12 @@
 		 * that does wire a third GPIO can add it here with no
 		 * driver change.
 		 *
-		 * TODO: confirm active-low/active-high polarity against
-		 * the MY-CAM004M schematic. GPIO_ACTIVE_LOW for RESET_N
-		 * and GPIO_ACTIVE_HIGH for PWREN are the standard
-		 * convention implied by those signal names, not yet
-		 * verified against the actual board.
+		 * Confirmed against the MY-CAM004M schematic: RESET_N
+		 * wires straight through (no inverter) to N4's RSTB pin,
+		 * documented "System Reset (Active Low)" -- GPIO_ACTIVE_LOW
+		 * is correct. PWREN wires straight through (0R) to the EN
+		 * pin of the board's SGM2028-ADJ LDO, a standard
+		 * active-high enable -- GPIO_ACTIVE_HIGH is correct.
 		 */
 		reset-gpios = <&main_gpio0 11 GPIO_ACTIVE_LOW>;
 		pwren-gpios = <&main_gpio0 12 GPIO_ACTIVE_HIGH>;
@@ -71,26 +79,31 @@
 				data-lanes = <1 2 3 4>;
 
 				/*
-				 * TODO: NOT a MY-CAM004M datasheet value.
-				 * This is a placeholder chosen only to
-				 * satisfy the throughput arithmetic for
-				 * 4x 1920x1080@30 YUYV (16 bpp) over 4
-				 * lanes:
+				 * ~1242 Mbps/lane -- N4's/NVP6324's fastest
+				 * of four discrete MIPI PHY clock steps
+				 * (378/594/756/1242 MHz), comfortably above
+				 * this board's throughput floor:
 				 *
 				 *   min bps/lane = (1920*1080*30*16) / 4
 				 *                =~ 249 Mbps
 				 *
-				 * 400 Mbps/lane below is comfortably
-				 * above that minimum (real designs run
-				 * faster than the bare minimum for
-				 * blanking/overhead margin), but it is
-				 * NOT confirmed against real hardware.
-				 * Replace with the real value once known;
-				 * mycam004m.c has no hardcoded fallback,
-				 * so this is a DT-only fix when it's
-				 * wrong.
+				 * *** NOT a MY-CAM004M / N4 datasheet value
+				 * *** -- N4's own datasheet leaves its
+				 * MIPI HS/LP transmitter AC timing table
+				 * entirely "TBD" (preliminary Rev 0.0).
+				 * Sourced instead from the exact register
+				 * recipe mycam004m_csi_output_regs[] in
+				 * mycam004m-regs.h writes to select this
+				 * PLL step, cross-confirmed almost
+				 * byte-for-byte between two independent
+				 * register-compatible sibling-chip
+				 * (NVP6324) drivers -- see that file for
+				 * the full citation and the one differing
+				 * byte pair. mycam004m.c has no hardcoded
+				 * fallback, so revising this remains a
+				 * DT-only change if real hardware disagrees.
 				 */
-				link-frequencies = /bits/ 64 <400000000>;
+				link-frequencies = /bits/ 64 <1242000000>;
 			};
 		};
 	};

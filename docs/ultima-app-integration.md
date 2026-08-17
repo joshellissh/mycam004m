@@ -40,7 +40,7 @@ Format is fixed and non-negotiable on both backends:
 | bytesperline | 3840 (exactly `width*2`, no stride padding) |
 | sizeimage | 4,147,200 |
 | field | `V4L2_FIELD_NONE` |
-| framerate | 30fps (fake: exactly; real: TBD once register tables land) |
+| framerate | 30fps (fake: exactly; real: targeted via register config, untested on hardware -- see caveat below) |
 
 `VIDIOC_S_FMT` is answered by coercion, not negotiation — both drivers
 hand back this exact format regardless of what's requested (see
@@ -48,9 +48,22 @@ hand back this exact format regardless of what's requested (see
 in `mycam004m-fake.c`, and the real driver's `mycam004m_set_fmt()` for
 the same philosophy). Confirmed on real hardware:
 `bytesperline == width*2` always holds for the fake backend
-(load-tested, see `docs/fake-driver-testing.md`) — the real backend
-should hold to the same contract once its register tables exist, but
-that specific claim is unverified until then.
+(load-tested, see `docs/fake-driver-testing.md`) — the real backend's
+`mycam004m_set_fmt()` reports the same fixed format via identical logic,
+but that specific claim (like everything about the real backend) remains
+unverified against actual MY-CAM004M hardware.
+
+**Framerate caveat for the real backend**: `mycam004m-regs.h` explicitly
+programs the decoder for 1080p30 (its power-on default is actually
+1080p25). That's correct *if* the AHD camera heads feeding MY-CAM004M
+are 30fps-capable — but MYIR's own bundled camera-head spec sheet for
+one of the modules they ship (`QJD6048-2053`, a panoramic/fisheye head)
+states a fixed 25fps with no 30fps option. If that's the physical
+camera on the target board, the real backend will actually be
+delivering 25fps frames mislabeled as 30fps until `mycam004m.h`/
+`mycam004m-regs.h` are updated to match — worth confirming which camera
+head is on the board before `CameraFeed` timing assumptions (if any)
+get built around 30fps specifically.
 
 `device_caps` is `V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING |
 V4L2_CAP_READWRITE` on both backends — no second/metadata node to
@@ -150,15 +163,37 @@ symlink layer this way.
 
 Right now, `real` will resolve TI's actual `j721e-csi2rx` nodes correctly
 (load-tested naming/pad assumptions aside — see the script's header
-comment on the one thing there that's still an assumption), but
-**streaming against them will hang at `VIDIOC_STREAMON`/first
-`DQBUF`** — `mycam004m.c`'s register tables are still empty stubs (see
-`mycam004m-regs.h`), so the real decoder is never told to actually
-transmit. That's a known, current limitation of the driver, not
-something to chase as an app-side bug. `fake` is fully load-tested
-end-to-end today (see `docs/fake-driver-testing.md`'s "What actually
-happened on real hardware") and is the thing to develop/test the app
-against until the real register tables land.
+comment on the one thing there that's still an assumption). Streaming
+against them is no longer a guaranteed hang: `mycam004m-regs.h`'s
+register tables are populated (from the Nextchip N4 datasheet plus
+cross-validated sibling-chip drivers — see the main README's Status
+section), and the driver now actually tells the decoder to power up
+each channel and transmit. **None of that has been run against real
+MY-CAM004M hardware, though** — build-tested and cross-source-validated
+is not the same as hardware-verified, so a hang or garbled/misrouted
+frames on `real` is still a live possibility, not something to rule
+out. If it happens, this is app-side-innocent either way (there's
+nothing `ultima-app` can do about a wrong decoder register value), but
+worth distinguishing a real driver/hardware issue from an app bug
+before chasing it as the latter:
+
+1. `dmesg | grep mycam004m` — probe should log `found N4 decoder:
+   DEV_ID 0xb0, ...`. If that line is missing or DEV_ID isn't `0xb0`,
+   it's an I2C/hardware problem below this driver, not a streaming
+   issue.
+2. If probe succeeds but `VIDIOC_STREAMON`/`DQBUF` still hangs, the
+   most likely culprits are (in order): the MIPI PLL/lane-rate register
+   block (flagged in `mycam004m-regs.h` as sourced from sibling-chip
+   drivers, not N4's own datasheet — the single lowest-confidence value
+   in the whole table), or virtual-channel configuration (a real TI
+   E2E integration thread for this exact chip reported total no-video
+   traced to VC config — see the README's Status section).
+
+`fake` is fully load-tested end-to-end today (see
+`docs/fake-driver-testing.md`'s "What actually happened on real
+hardware") and remains the thing to develop/test app logic against
+regardless of `real`'s status — it's the only backend with an actual
+hardware-verified track record.
 
 ## Suggested verification order
 
@@ -178,3 +213,8 @@ against until the real register tables land.
 4. Only then measure the real GUI-thread conversion cost against the
    render budget (see "risk" section above) before deciding whether it
    needs addressing.
+5. Once real MY-CAM004M hardware is available: `scripts/select-camera-backend.sh
+   real`, repeat steps 1-3 against actual camera input instead of the
+   static references. This is the first real-hardware test of anything
+   in `mycam004m-regs.h`'s register tables — see the "Fake vs. real"
+   section above for what to check first if it doesn't come up clean.

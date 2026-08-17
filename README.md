@@ -7,30 +7,56 @@ Target platform: **BeaglePlay (TI AM625)** via the J17 CSI connector,
 with TI's `j721e-csi2rx` / `cdns-csi2rx` drivers owning the D-PHY, CSI-2
 bridge, and DMA on the SoC side.
 
-## Status: structurally complete, register-level TODO
+## Status: register tables populated, NOT tested against real hardware
 
-The V4L2/Media-Controller plumbing is real and has been build-tested
-against the actual target kernel (see "How this was verified" below).
-What's **not** implemented is anything that requires MYIR's
-register-level programming documentation for MY-CAM004M / its "N4"
-decoder, which wasn't available while writing this. Every such place is
-marked `TODO` in the source, and isolated as tightly as possible:
+The V4L2/Media-Controller plumbing is real and build-tested against the
+actual target kernel (see "How this was verified" below). The
+register-level unknowns that used to block this are now resolved: MYIR
+supplied the actual Nextchip N4 datasheet, MY-CAM004M board schematic,
+and product manual (in `MY-CAM004M/`), and researching the remaining
+gaps turned up two independent, real, register-compatible sibling-chip
+(Nextchip NVP6324) drivers that supply the one thing N4's own
+(preliminary, Rev 0.0) datasheet doesn't cover: the MIPI PLL/lane-rate
+register recipe.
 
-| Unknown | Where it lives | What to do once you have the datasheet |
+**None of this has been run against real MY-CAM004M hardware.** Every
+value below is either primary-sourced (N4's own datasheet) or
+cross-validated (matching almost byte-for-byte between two
+independently-written sibling-chip drivers) -- see the citations in
+`mycam004m-regs.h` for each one -- but "well-evidenced" isn't "proven."
+
+| Unknown | Status | Source |
 |---|---|---|
-| Init register sequence | `mycam004m_init_regs[]` in `mycam004m-regs.h` | Fill in the array. `mycam004m.c` doesn't need to change. |
-| CSI-2 output config (lanes, format, VC assignment) | `mycam004m_csi_output_regs[]` in `mycam004m-regs.h` | Same as above -- but see the two things in `mycam004m.c` that must stay in sync with it, called out in the big comment at the top of `mycam004m-regs.h`. |
-| Per-AHD-input enable/disable | `mycam004m_enable_camera_input()` / `_disable_camera_input()` in `mycam004m.c` | Not tabular yet (shape unknown) -- implement directly. |
-| CSI-2 TX start/stop | `mycam004m_start_csi_tx()` / `_stop_csi_tx()` in `mycam004m.c` | Likely a single register/bit -- implement directly. |
-| Virtual-channel assignment (AHD input N -> VC N) | `mycam004m_vc_for_cam()` in `mycam004m.c` | Confirm or correct the mapping. |
-| I2C address (0x30-0x33, SA0/SA1-strap-selected) | `reg = <0x30>` in `dts/k3-am625-beagleplay-mycam004m.dtso` | Confirm with `i2cdetect` against the populated board; DT-only fix. |
-| GPIO polarity (RESET_N/PWREN active-low/high) | Same overlay file | Confirm against the MY-CAM004M schematic; DT-only fix. |
-| CSI-2 lane bit rate | `link-frequencies` in the same overlay | Currently a placeholder that only satisfies the throughput arithmetic, not a real datasheet value; DT-only fix, no driver code depends on the specific number. |
-| Chip-ID readback during probe | Not present | Add once you know the ID register's address/expected value. |
+| Chip identity | confirmed | `MY-CAM004M/Datasheet-N4.pdf` (Nextchip N4, Rev 0.0, 2017) |
+| I2C address (0x30) | confirmed | Board schematic labels it directly ("I2C add 0x61"); matches N4's SA0/SA1 address formula |
+| GPIO polarity (RESET_N active-low, PWREN active-high) | confirmed | Schematic: direct wiring (no inverters) to N4's RSTB pin and the board's SGM2028-ADJ LDO's EN pin |
+| Register map shape (bank-switched, write 0xFF to select) + 8-bit reg/val width | confirmed via sibling drivers, not N4's own text | Two independent NVP6324 drivers' actual bank-select writes, lining up with N4's own datasheet chapter numbering (BANK0/BANK1/BANK2~3/BANK4/BANK20/BANK21) |
+| Chip-ID readback (`DEV_ID` = 0xB0 at bank0 reg 0xF4) | confirmed | N4 datasheet |
+| Per-input enable/disable (`PD_VCH`, bank0 0x00-0x03) | confirmed | N4 datasheet |
+| Video mode/resolution select (`AHD_MD`, bank0 0x08-0x0B) | confirmed -- see camera-fps caveat below | N4 datasheet |
+| CSI-2 output data type (0x1E, YUV422 8-bit, bank21 0x38-0x3B) | confirmed | N4 datasheet (also its power-on-reset default) |
+| Virtual-channel assignment (auto mode, bank21 0x2E) | confirmed -- see VC caveat below | N4 datasheet |
+| CSI-2 lane count + TX start/stop (bank21 0x07 = 0x0F) | confirmed | N4 datasheet bit layout, decoded against a real sibling-driver write of this exact value |
+| MIPI PLL / lane bit rate (~1242 Mbps/lane) | best-evidenced, NOT primary-sourced | Two independent NVP6324 drivers agree on 15 of 17 register values; N4's own datasheet leaves this table entirely "TBD" |
+| Reset/power-up timing | confirmed (existing delays were already conservative enough) | N4 datasheet (RSTB timing) + SGM2028-ADJ datasheet (LDO settle time) |
 
-Grep the repo for `TODO` to find all of these plus a few smaller ones
-(register width assumption, register-write inter-delay, etc.) with full
-context.
+Two things worth checking first on real hardware:
+
+- **Frame rate vs. the actual camera heads.** This driver targets a
+  fixed 1920x1080@30. N4's own power-on default is 1080p25, and one of
+  the camera-head spec sheets MYIR bundled (`QJD6048-2053摄像头规格书.pdf`)
+  is a 25fps-only module -- forcing `AHD_MD` to 30P (as
+  `mycam004m_init_regs[]` currently does) won't make a 25fps-only
+  camera output 30fps. See that table's comment in `mycam004m-regs.h`
+  for what to change if that's the camera on your board.
+- **Virtual-channel configuration is a known trouble spot for this
+  exact chip.** A real TI E2E integration thread about NVP6324 on a TI
+  SoC reported total no-video, which TI support traced to VC config.
+  Watch this first if streaming comes up empty.
+
+Grep the repo for `TODO` for what's left -- none of it is register-map
+related (deliberately-omitted frame-interval ops, the unregistered
+"myir" devicetree vendor prefix).
 
 ## Why the two GPIOs, not three
 
@@ -45,26 +71,34 @@ three as optional GPIOs (`devm_gpiod_get_optional`), so a future
 carrier board that does wire a third GPIO needs no driver change --
 just add a `pwrdn-gpios` property to its overlay.
 
+This turns out to be doubly justified: the MY-CAM004M board schematic
+(`MY-CAM004M/my-cam004m-20230725.pdf`) shows its own `PWRDN` net isn't
+wired to anything either -- N4 doesn't have a PWRDN pin at all (only
+RSTB), so the module's PWRDN line is a no-connect on this variant, not
+just unrouted on BeaglePlay's end.
+
 ## Repo layout
 
 - `mycam004m.c` -- the driver.
 - `mycam004m.h` -- shared constants/structs (pad indices, fixed target
   format, the `struct mycam004m_reg` register-table entry type).
-- `mycam004m-regs.h` -- the register tables. **This is the file to
-  edit** once MYIR's programming guide is available; see its top
-  comment.
+- `mycam004m-regs.h` -- the register tables, populated from the
+  Nextchip N4 datasheet and cross-validated sibling-chip drivers; see
+  its top comment for the full citation trail and remaining caveats.
 - `Kconfig`, `Makefile` -- see "Building" below.
 - `dts/k3-am625-beagleplay-mycam004m.dtso` -- devicetree overlay:
   I2C address, reset/pwren GPIOs, 4 CSI-2 lanes, endpoint link to
   `cdns_csi2rx0`.
 - `docs/testing.md` -- `media-ctl`/`v4l2-ctl` commands to verify the
-  media graph, format negotiation, and (once the register tables are
-  filled in) actual 4-stream capture.
+  media graph, format negotiation, and actual 4-stream capture (the
+  register tables are populated now, but this hasn't been run against
+  real hardware -- see the Status section above).
 - `mycam004m-fake.c` -- a second, independent module: a fake capture
   driver that serves 4 static reference images as real `/dev/video*`
   frame buffers, so a calling app's V4L2 code can be tested end-to-end
-  without MY-CAM004M hardware or the register tables. Not part of the
-  real driver -- see `docs/fake-driver-testing.md`.
+  without MY-CAM004M hardware, independent of whether the real driver's
+  register tables turn out to be right. Not part of the real driver --
+  see `docs/fake-driver-testing.md`.
 - `tools/gen_fake_frames.py` -- generates the 4 reference images
   `mycam004m-fake.c` serves (`firmware/mycam004m-fake/cam{1..4}.bin`).
 - `scripts/select-camera-backend.sh` -- symlinks `/dev/mycam/cam1..4`
@@ -135,15 +169,32 @@ change this file).
 
 ### Applying the devicetree overlay
 
-Compile with `dtc` (the kernel tree above already has one under
-`scripts/dtc/`) against the same kernel's DT includes, e.g.:
+`dtc` alone isn't enough -- the overlay's `#include
+<dt-bindings/gpio/gpio.h>` needs a C preprocessor pass first (this was
+actually caught during this driver's own build verification: bare `dtc`
+on this file fails with a syntax error on that line). The kernel source
+tree (not the build-output `$KDIR` used elsewhere in this doc -- the
+actual source, e.g. `.../linux-ti-staging/6.12.57+git/packages-split/
+linux-ti-staging-src/board-support/ti-linux-kernel-6.12.57+git-ti` in
+this project's Yocto volume) has the `dt-bindings` headers `cpp` needs
+and a `scripts/dtc/dtc` binary:
 
 ```sh
-dtc -@ -I dts -O dtb \
+KSRC=/path/to/kernel/source/tree   # has include/dt-bindings/, not just the build output
+
+aarch64-oe-linux-cpp -nostdinc -undef -x assembler-with-cpp \
+    -I "$KSRC/include" -I "$KSRC/arch/arm64/boot/dts" \
+    dts/k3-am625-beagleplay-mycam004m.dtso -o /tmp/mycam004m.dts.tmp
+
+"$KSRC/scripts/dtc/dtc" -@ -I dts -O dtb \
     -o k3-am625-beagleplay-mycam004m.dtbo \
-    -i $KDIR/arch/arm64/boot/dts/ti \
-    dts/k3-am625-beagleplay-mycam004m.dtso
+    -i "$KSRC/arch/arm64/boot/dts/ti" \
+    /tmp/mycam004m.dts.tmp
 ```
+
+(Substitute your cross-compiler's `cpp` if not using the Yocto
+toolchain above.) This was run for real as part of verifying this
+driver's register-table update -- see "How this was verified" below.
 
 then apply it however your bootloader/overlay mechanism expects
 (U-Boot `fdt apply`, `/boot/overlays`, etc. -- specific to how this
@@ -154,22 +205,26 @@ which this repo intentionally doesn't touch).
 ### Verifying
 
 See `docs/testing.md` for `media-ctl`/`v4l2-ctl` commands to check the
-media graph, format negotiation, and streams -- including what's
-expected to work already vs. what needs the register tables filled in
-first.
+media graph, format negotiation, and streams -- including what to check
+first if streaming doesn't come up clean (the register tables are
+populated but untested against real hardware -- see the Status section
+above).
 
-### Testing the calling app without hardware or a register table
+### Testing the calling app without real hardware
 
 See `docs/fake-driver-testing.md`. `mycam004m-fake.ko` (built from
 this same Makefile) serves 4 static reference images as real
 `/dev/video*` frame buffers, so a calling app's open/negotiate/stream
 code can be exercised against genuine (if static) delivered pixel
-data today, independent of the driver's own TODOs.
+data today, independent of whether the real driver's register tables
+turn out to be right on actual hardware.
 
 ## How this was verified
 
-No MY-CAM004M hardware or MYIR documentation was available while
-writing this, so "verified" here means something specific and limited:
+Initially written with no MY-CAM004M hardware or MYIR documentation
+available, so "verified" here means something specific and limited --
+this section covers both that initial pass and the later register-table
+update once documentation did turn up:
 
 - **Every non-TODO API call in `mycam004m.c` was checked against real
   usage in TI's own kernel tree** (`ds90ub960.c`, the FPD-Link
@@ -190,8 +245,27 @@ writing this, so "verified" here means something specific and limited:
   own `falcon-yocto-build` Docker volume. `modinfo` on the resulting
   `.ko` confirms correct `depends` (`videodev`, `v4l2-fwnode`, `mc`,
   `v4l2-async`), correct OF/I2C module aliases, and a `vermagic`
-  matching that exact kernel build.
+  matching that exact kernel build. Re-run and re-confirmed clean after
+  the register-table update described above.
+- **The devicetree overlay actually compiles**, `cpp`-preprocessed then
+  run through the real kernel source tree's `scripts/dtc/dtc` (see
+  "Applying the devicetree overlay" above for why bare `dtc` doesn't
+  work on this file). The resulting `.dtbo` was decompiled back to
+  source and its property values checked byte-for-byte: `reg = <0x30>`,
+  `reset-gpios` pin 11 flags `GPIO_ACTIVE_LOW`, `pwren-gpios` pin 12
+  flags `GPIO_ACTIVE_HIGH`, `data-lanes = <1 2 3 4>`, and
+  `link-frequencies` decodes to exactly 1242000000 -- all landed
+  correctly, not just "the build didn't error."
+- **The register tables in `mycam004m-regs.h` were cross-validated
+  between independent sources**, not written from a single guess: N4's
+  own datasheet where it documents a register directly, and byte-level
+  comparison between two independently-written NVP6324 drivers (from
+  different companies, targeting different SoCs) where it doesn't (the
+  MIPI PLL table) -- 15 of 17 register values matched exactly between
+  those two sources. Full citations are inline in `mycam004m-regs.h`.
 - **What this does *not* verify**: actual behavior against real
-  MY-CAM004M hardware, correctness of anything still marked TODO, or
-  that the devicetree overlay's placeholder values (I2C address, GPIO
-  polarity, lane rate) match your populated board.
+  MY-CAM004M hardware. No board was available for this update either --
+  every register value is either primary-sourced or cross-validated
+  against other drivers, never hardware-tested. See the Status section
+  above for the two specific things (camera frame rate, virtual-channel
+  behavior) most worth checking first.

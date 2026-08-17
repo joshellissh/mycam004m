@@ -15,15 +15,17 @@
  * cdns-csi2rx drivers, which own the D-PHY, CSI-2 bridge, and DMA.
  *
  * *** IMPORTANT ***
- * MYIR has not (yet) provided register-level programming documentation
- * for MY-CAM004M / its "N4" decoder. Every place in this file that
- * depends on that documentation is marked TODO and, where practical,
- * isolated into mycam004m-regs.h (register tables) or a small,
- * clearly-named stub function (anything not naturally tabular). The
- * V4L2-level plumbing -- media graph, pad/stream topology, formats,
- * virtual-channel frame descriptors -- is implemented for real and
- * should not need to change when the register documentation arrives;
- * only the TODO-marked pieces should.
+ * MY-CAM004M's decoder is confirmed to be Nextchip's "N4"; its register
+ * map is populated in mycam004m-regs.h from N4's own datasheet plus two
+ * independent register-compatible sibling-chip (NVP6324) drivers -- see
+ * the citations there. All of that is *** NOT tested against real
+ * MY-CAM004M hardware ***; a few specific values remain flagged
+ * lower-confidence where sourced from the sibling drivers rather than
+ * N4's own datasheet (which is a preliminary Rev 0.0 missing its AC/
+ * timing tables). Search mycam004m-regs.h and this file for remaining
+ * TODOs. The V4L2-level plumbing -- media graph, pad/stream topology,
+ * formats, virtual-channel frame descriptors -- was already implemented
+ * for real before the register map was found and didn't need to change.
  *
  * Media topology:
  *
@@ -91,12 +93,14 @@ static inline struct mycam004m *to_mycam004m(struct v4l2_subdev *sd)
 }
 
 /*
- * TODO: confirm against the MYIR MY-CAM004M / N4 programming guide once
- * available. This assumes AHD input N is transmitted on virtual channel
- * N, which is the obvious default but is NOT yet verified against real
- * hardware or documentation. See the long comment in mycam004m-regs.h
- * for what else needs to move in lockstep with this if it turns out to
- * be wrong.
+ * Confirmed via N4's own datasheet: MIPI_CH_ID_TYPE (bank 0x21, reg
+ * 0x2E, written in mycam004m_csi_output_regs[] -- see mycam004m-regs.h)
+ * set to auto-insertion mode assigns VC N to AHD input N automatically,
+ * matching this identity mapping. NOT tested against real hardware --
+ * a real-world TI E2E thread about this exact chip reported a total
+ * no-video failure traced back to virtual-channel configuration, so
+ * verify this carefully once a board is available rather than trusting
+ * it by inspection alone.
  */
 static u8 mycam004m_vc_for_cam(unsigned int cam_idx)
 {
@@ -113,19 +117,30 @@ static int mycam004m_write_regs(struct mycam004m *cam,
 				  unsigned int n_regs)
 {
 	struct device *dev = &cam->client->dev;
+	/* No entry's .bank (a u8) can ever equal -1, so the first entry
+	 * always selects its bank rather than assuming one's already
+	 * selected.
+	 */
+	int cur_bank = -1;
 	unsigned int i;
 	int ret;
 
-	if (!n_regs) {
-		dev_dbg(dev, "register table is empty (TODO: not yet populated), nothing to write\n");
-		return 0;
-	}
-
 	for (i = 0; i < n_regs; i++) {
+		if (regs[i].bank != cur_bank) {
+			ret = regmap_write(cam->regmap, MYCAM004M_REG_BANK_SEL,
+					    regs[i].bank);
+			if (ret) {
+				dev_err(dev, "failed selecting bank 0x%02x: %d\n",
+					regs[i].bank, ret);
+				return ret;
+			}
+			cur_bank = regs[i].bank;
+		}
+
 		ret = regmap_write(cam->regmap, regs[i].reg, regs[i].val);
 		if (ret) {
-			dev_err(dev, "failed writing reg 0x%04x = 0x%02x: %d\n",
-				regs[i].reg, regs[i].val, ret);
+			dev_err(dev, "failed writing bank 0x%02x reg 0x%04x = 0x%02x: %d\n",
+				regs[i].bank, regs[i].reg, regs[i].val, ret);
 			return ret;
 		}
 	}
@@ -154,54 +169,62 @@ static int mycam004m_configure_csi_output(struct mycam004m *cam)
 }
 
 /*
- * Per-AHD-input enable/disable. TODO: not modeled as a register table
- * (unlike the two functions above) because the actual register shape
- * -- one global register with per-channel bits, four independent
- * per-channel blocks, something else entirely -- isn't known yet. Fill
- * these in directly against the MYIR programming guide; promote to a
- * table in mycam004m-regs.h if a tabular shape ends up fitting.
+ * Per-AHD-input enable/disable: toggles PD_VCH_<cam_idx> (bank 0, reg
+ * 0x00+cam_idx, bit0, active high) -- see mycam004m-regs.h. Single
+ * register per channel, confirmed directly from the N4 datasheet; no
+ * table needed for something this small.
  */
 static int mycam004m_enable_camera_input(struct mycam004m *cam,
 					   unsigned int cam_idx)
 {
-	struct device *dev = &cam->client->dev;
+	const struct mycam004m_reg reg = {
+		MYCAM004M_BANK_VIDEO_FORMAT,
+		MYCAM004M_REG_PD_VCH(cam_idx),
+		MYCAM004M_PD_VCH_NORMAL,
+	};
 
-	dev_dbg(dev, "TODO: enable AHD input %u / VC %u register write not yet implemented\n",
-		cam_idx, mycam004m_vc_for_cam(cam_idx));
-	return 0;
+	return mycam004m_write_regs(cam, &reg, 1);
 }
 
 static int mycam004m_disable_camera_input(struct mycam004m *cam,
 					    unsigned int cam_idx)
 {
-	struct device *dev = &cam->client->dev;
+	const struct mycam004m_reg reg = {
+		MYCAM004M_BANK_VIDEO_FORMAT,
+		MYCAM004M_REG_PD_VCH(cam_idx),
+		MYCAM004M_PD_VCH_POWERDOWN,
+	};
 
-	dev_dbg(dev, "TODO: disable AHD input %u / VC %u register write not yet implemented\n",
-		cam_idx, mycam004m_vc_for_cam(cam_idx));
-	return 0;
+	return mycam004m_write_regs(cam, &reg, 1);
 }
 
-/* Starts/stops the physical CSI-2 transmitter (PLL, D-PHY lanes). TODO:
- * likely a single register/bit once the programming guide is
- * available -- separated out from mycam004m_configure_csi_output() so
- * that "configure the link" and "turn the link on" can be sequenced
- * independently, matching how ds90ub960.c (this tree's reference
- * multiplexed-stream decoder driver) structures TX port enable.
+/* Starts/stops the physical CSI-2 transmitter (PLL, D-PHY lanes) via
+ * bank 0x21 reg 0x07 -- see its comment in mycam004m-regs.h. Kept
+ * separate from mycam004m_configure_csi_output() so that "configure the
+ * link" and "turn the link on" can be sequenced independently, matching
+ * how ds90ub960.c (this tree's reference multiplexed-stream decoder
+ * driver) structures TX port enable.
  */
 static int mycam004m_start_csi_tx(struct mycam004m *cam)
 {
-	struct device *dev = &cam->client->dev;
+	const struct mycam004m_reg reg = {
+		MYCAM004M_BANK_MIPI_TX,
+		MYCAM004M_REG_MIPI_TX_CTRL,
+		MYCAM004M_MIPI_TX_CTRL_START,
+	};
 
-	dev_dbg(dev, "TODO: start CSI-2 TX register write not yet implemented\n");
-	return 0;
+	return mycam004m_write_regs(cam, &reg, 1);
 }
 
 static int mycam004m_stop_csi_tx(struct mycam004m *cam)
 {
-	struct device *dev = &cam->client->dev;
+	const struct mycam004m_reg reg = {
+		MYCAM004M_BANK_MIPI_TX,
+		MYCAM004M_REG_MIPI_TX_CTRL,
+		MYCAM004M_MIPI_TX_CTRL_STOP,
+	};
 
-	dev_dbg(dev, "TODO: stop CSI-2 TX register write not yet implemented\n");
-	return 0;
+	return mycam004m_write_regs(cam, &reg, 1);
 }
 
 /* -----------------------------------------------------------------------
@@ -218,9 +241,12 @@ static void mycam004m_power_on(struct mycam004m *cam)
 	gpiod_set_value_cansleep(cam->pwren_gpio, 1);
 
 	/*
-	 * TODO: confirm the real power-rail settling time from the
-	 * MY-CAM004M/N4 datasheet. This is a conservative, unverified
-	 * placeholder.
+	 * Confirmed: PWREN gates the board's SGM2028-ADJ LDO (its EN pin,
+	 * wired directly, no inversion -- confirmed from the MY-CAM004M
+	 * schematic) that supplies N4's 3.3V rail. SGM2028's own datasheet
+	 * "Shutdown Exit Delay" spec is 30us typical (VOUT to 90% of
+	 * final value). 5-10ms here is a comfortable margin above that,
+	 * not a guess.
 	 */
 	usleep_range(5000, 10000);
 
@@ -233,8 +259,11 @@ static void mycam004m_power_on(struct mycam004m *cam)
 	gpiod_set_value_cansleep(cam->reset_gpio, 0); /* release RESET_N */
 
 	/*
-	 * TODO: confirm the real reset-release-to-I2C-ready delay from the
-	 * datasheet. This is a conservative, unverified placeholder.
+	 * Confirmed: N4's datasheet AC characteristics give RSTB release
+	 * time (low-to-high) as >=10us minimum before the chip is ready.
+	 * 10-20ms here is a large margin above that minimum, not a guess
+	 * -- kept this conservative since there's no board to time it
+	 * against yet.
 	 */
 	usleep_range(10000, 20000);
 
@@ -280,14 +309,15 @@ static int mycam004m_set_routing(struct v4l2_subdev *sd,
 		return ret;
 
 	/*
-	 * TODO: MY-CAM004M's internal AHD-input -> virtual-channel mapping
-	 * is fixed by register programming we don't have documented yet
-	 * (see mycam004m_configure_csi_output()). Until that's known and
-	 * we know whether it's even reprogrammable, only accept the
-	 * identity routing this driver installs by default (AHD input N ->
-	 * source stream N) and reject anything else, rather than accepting
-	 * a route this driver cannot actually program the hardware to
-	 * match.
+	 * MY-CAM004M's internal AHD-input -> virtual-channel mapping is
+	 * fixed identity (input N -> VC N) via the auto-VC-insertion mode
+	 * programmed in mycam004m_configure_csi_output() -- see
+	 * MYCAM004M_REG_MIPI_CH_ID_TYPE in mycam004m-regs.h. N4 also has a
+	 * manual VC-insertion mode, but it's a single global channel-number
+	 * register, not independently reprogrammable per AHD input, so
+	 * there's no non-identity routing this driver could actually
+	 * program the hardware to match. Only accept the identity routing
+	 * this driver installs by default and reject anything else.
 	 */
 	for (i = 0; i < routing->num_routes; i++) {
 		const struct v4l2_subdev_route *route = &routing->routes[i];
@@ -412,18 +442,17 @@ static int mycam004m_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
 		entry->pixelcode = MEDIA_BUS_FMT_YUYV8_1X16;
 
 		/*
-		 * VC assignment: TODO, see mycam004m_vc_for_cam(). This is
-		 * the value TI's j721e-csi2rx driver reads (via
-		 * get_frame_desc) to program its own per-context VC filter
-		 * -- getting it wrong here means the wrong camera's data
-		 * lands on the wrong /dev/videoN, not just a cosmetic
-		 * mismatch.
+		 * VC assignment: see mycam004m_vc_for_cam(). This is the
+		 * value TI's j721e-csi2rx driver reads (via get_frame_desc)
+		 * to program its own per-context VC filter -- getting it
+		 * wrong here means the wrong camera's data lands on the
+		 * wrong /dev/videoN, not just a cosmetic mismatch.
 		 *
-		 * DT is the standard MIPI CSI-2 wire code for 8-bit YUV422
-		 * (0x1e) -- not MYIR-specific, safe as-is *if*
+		 * 0x1e is the standard MIPI CSI-2 wire code for 8-bit YUV422
+		 * -- not MYIR-specific -- and is confirmed to be what
 		 * mycam004m_configure_csi_output() actually programs the
-		 * chip to emit that data type on the wire. See the TODO in
-		 * mycam004m-regs.h.
+		 * chip to emit (MYCAM004M_MIPI_TX_DATA_TYPE_YUV422_8B in
+		 * mycam004m-regs.h).
 		 */
 		entry->bus.csi2.vc = mycam004m_vc_for_cam(route->sink_pad);
 		entry->bus.csi2.dt = MIPI_CSI2_DT_YUV422_8B;
@@ -593,12 +622,11 @@ static const struct v4l2_subdev_ops mycam004m_subdev_ops = {
  */
 
 /*
- * TODO: register address/value width is unconfirmed. 8-bit reg / 8-bit
- * val is the common case for this class of chip and is assumed here as
- * a starting point -- confirm against the MY-CAM004M / N4 datasheet.
- * If it turns out to need 16-bit register addressing, change reg_bits
- * here (mycam004m_reg.reg in mycam004m.h is already u16 to allow that
- * without further changes).
+ * Confirmed 8-bit register address / 8-bit value against N4's own I2C
+ * protocol chapter and the sibling driver's actual i2c_master_send()
+ * calls -- see mycam004m-regs.h. MYCAM004M_REG_BANK_SEL (written by
+ * mycam004m_write_regs()) extends the effective address space via
+ * banking rather than needing a wider reg_bits here.
  */
 static const struct regmap_config mycam004m_regmap_config = {
 	.name = "mycam004m",
@@ -641,11 +669,12 @@ static int mycam004m_parse_dt(struct mycam004m *cam)
 	}
 
 	/*
-	 * TODO: the real per-lane bit rate is unknown -- see the
-	 * link-frequencies comment in the DT overlay. Whatever's in DT is
-	 * taken as authoritative here; there is no hardcoded fallback, so
-	 * fixing this is a DT-only change once the datasheet value is
-	 * known.
+	 * ~1242 Mbps/lane, sourced from register-compatible sibling-chip
+	 * drivers rather than N4's own datasheet (whose AC/timing tables
+	 * are left "TBD") -- see the link-frequencies comment in the DT
+	 * overlay for the full citation. Whatever's in DT is taken as
+	 * authoritative here; there is no hardcoded fallback, so revising
+	 * this remains a DT-only change if real hardware disagrees.
 	 */
 	cam->link_freq[0] = vep.link_frequencies[0];
 
@@ -654,6 +683,43 @@ static int mycam004m_parse_dt(struct mycam004m *cam)
 out_free_vep:
 	v4l2_fwnode_endpoint_free(&vep);
 	return ret;
+}
+
+/* Chip-ID readback: confirms the I2C link works and that whatever's at
+ * this address is actually an N4 before going any further. Bank 0 reg
+ * 0xF4 (DEV_ID) and 0xF5 (REV_ID) are read-only -- confirmed directly
+ * from N4's own datasheet ("It shows Device ID (N4 = 0xB0)").
+ */
+static int mycam004m_check_chip_id(struct mycam004m *cam)
+{
+	struct device *dev = &cam->client->dev;
+	unsigned int dev_id, rev_id;
+	int ret;
+
+	ret = regmap_write(cam->regmap, MYCAM004M_REG_BANK_SEL,
+			    MYCAM004M_BANK_VIDEO_FORMAT);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				      "failed selecting bank 0x%02x for chip-ID readback\n",
+				      MYCAM004M_BANK_VIDEO_FORMAT);
+
+	ret = regmap_read(cam->regmap, MYCAM004M_REG_DEV_ID, &dev_id);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed reading DEV_ID\n");
+
+	if (dev_id != MYCAM004M_DEV_ID_VAL)
+		return dev_err_probe(dev, -ENODEV,
+				      "unexpected DEV_ID 0x%02x (expected 0x%02x for N4) -- wrong I2C address, dead chip, or not an N4?\n",
+				      dev_id, MYCAM004M_DEV_ID_VAL);
+
+	ret = regmap_read(cam->regmap, MYCAM004M_REG_REV_ID, &rev_id);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed reading REV_ID\n");
+
+	dev_info(dev, "found N4 decoder: DEV_ID 0x%02x, REV_ID 0x%02x\n",
+		 dev_id, rev_id);
+
+	return 0;
 }
 
 static int mycam004m_init_controls(struct mycam004m *cam)
@@ -770,12 +836,16 @@ static int mycam004m_probe(struct i2c_client *client)
 				      "failed to init regmap\n");
 
 	/*
-	 * TODO: confirm GPIO polarity against the MY-CAM004M schematic.
-	 * "reset" active-low and "pwren" active-high are the standard
-	 * convention implied by their names (RESET_N, PWREN) and are
-	 * expressed as such in the DT overlay via GPIO_ACTIVE_LOW/HIGH --
-	 * this driver only ever deals in logical asserted(1)/deasserted(0)
-	 * values, so a polarity fix (if needed) is DT-only.
+	 * Confirmed against the MY-CAM004M schematic: RESET_N wires
+	 * straight through (no inverter) to N4's RSTB pin, documented
+	 * "System Reset (Active Low)" -- GPIO_ACTIVE_LOW in the DT overlay
+	 * is correct. PWREN wires straight through (0R, no inversion) to
+	 * the EN pin of the board's SGM2028-ADJ LDO, a standard
+	 * active-high enable -- GPIO_ACTIVE_HIGH in the DT overlay is also
+	 * correct. This driver only ever deals in logical
+	 * asserted(1)/deasserted(0) values either way, so a polarity fix
+	 * (if this ever turns out wrong against a real board) would still
+	 * only be a DT-only change.
 	 *
 	 * All three are optional: BeaglePlay's J17 only wires two GPIOs to
 	 * the camera header (see the DT overlay), and other boards may tie
@@ -804,18 +874,15 @@ static int mycam004m_probe(struct i2c_client *client)
 
 	mycam004m_power_on(cam);
 
-	/*
-	 * TODO: once the register map is known, this is the natural place
-	 * for a chip-ID readback to validate the I2C link before going any
-	 * further (we don't know the ID register's address or expected
-	 * value yet, so there isn't one).
-	 */
+	ret = mycam004m_check_chip_id(cam);
+	if (ret)
+		goto err_power_off;
 
 	ret = mycam004m_create_subdev(cam);
 	if (ret)
 		goto err_power_off;
 
-	dev_info(dev, "probed at I2C address 0x%02x, %u data lanes, link-freq %lld Hz (TODO: unverified placeholder, see DT overlay)\n",
+	dev_info(dev, "probed at I2C address 0x%02x, %u data lanes, link-freq %lld Hz\n",
 		 client->addr, MYCAM004M_NUM_LANES, cam->link_freq[0]);
 
 	return 0;

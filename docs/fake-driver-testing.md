@@ -4,8 +4,12 @@
 repo (`mycam004m-fake.c`). It is **not** part of the real mycam004m
 driver and is never loaded on a real board -- it exists purely so a
 calling application's V4L2 capture code can be exercised against real,
-delivered frame buffers before MY-CAM004M hardware or its register
-tables (see `mycam004m-regs.h`) are available.
+delivered frame buffers before MY-CAM004M hardware is available. (The
+real driver's register tables in `mycam004m-regs.h` are populated now,
+but remain untested against actual hardware -- see the main README's
+Status section -- so this module's hardware-verified, byte-identical
+frame delivery is still the only fully proven capture path in this
+repo.)
 
 It registers 4 independent `/dev/videoX` capture devices, each
 replaying one static YUYV reference image, at the real driver's target

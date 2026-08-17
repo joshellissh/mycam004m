@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Resolve this project's 4 camera capture nodes -- real (TI's
-# j721e-csi2rx, fed by mycam004m.ko once its register tables are
-# filled in -- see mycam004m-regs.h) or fake (mycam004m-fake.ko's
+# j721e-csi2rx, fed by mycam004m.ko -- see mycam004m-regs.h for the
+# register tables and their sourcing/confidence, still untested
+# against real hardware) or fake (mycam004m-fake.ko's
 # static reference images, see tools/gen_fake_frames.py) -- to a fixed
 # set of symlinks under /dev/mycam/, so a calling application always
 # opens the same paths regardless of which backend is active.
