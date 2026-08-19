@@ -28,15 +28,49 @@ time.
 
 ## 1. Generate the reference images
 
+The committed `firmware/mycam004m-fake/cam{1,2,3,4}.bin` are now real
+captured frames -- the first frame of each of the car's 4 physical
+camera feeds (front/rear/left/right, matching `ultima-app`'s
+`cam1=front, cam2=rear, cam3=left, cam4=right` mapping -- see
+`surroundview.h` in the `UltimaGC` repo), not the synthetic solid-color
+pattern below. Real footage is self-distinguishing (each quadrant is
+visibly a different place), which was the whole point of the old
+marker squares, so those were dropped rather than composited on top.
+
+They were produced with, for each `<src>`/`<camN>` pair
+(front/cam1, back/cam2, left/cam3, right/cam4):
+
+```sh
+ffmpeg -y -i <src>.mp4 \
+  -vf "scale=1920:1080:force_original_aspect_ratio=increase:in_range=full:out_range=full,crop=1920:1080" \
+  -vframes 1 -pix_fmt yuyv422 -f rawvideo firmware/mycam004m-fake/<camN>.bin
+```
+
+`force_original_aspect_ratio=increase` + centered `crop` scale-to-cover
+rather than stretch (source is 1376x976, target is 1920x1080 -- a
+straight `scale=1920:1080` would distort it). `in_range=full:out_range=full`
+matters: the source is `yuvj420p` (JPEG/full-range) and
+`camerafeed.cpp`'s `convertYUYVToRGB32` uses full-range BT.601 math
+(no 16/235 rescale), so a limited-range conversion here would come out
+washed out through the app's decoder. Verified empirically byte-identical
+to ffmpeg's default here, but pass it explicitly rather than relying on
+that default holding across ffmpeg versions. Each output must be
+exactly `WIDTH*HEIGHT*2` = `4147200` bytes -- the driver hard-fails on
+any other size (see below).
+
+If you want the old synthetic pattern back instead (e.g. to isolate a
+driver bug from anything about the source frames):
+
 ```sh
 python3 tools/gen_fake_frames.py
 ```
 
-Writes `firmware/mycam004m-fake/cam{1,2,3,4}.bin` -- raw YUYV422
-frames, each a distinct solid background color with a black marker bar
-containing N white squares (N = camera number), so the camera number
-is identifiable by eye. Pure Python stdlib, no dependencies. Edit
-`BACKGROUNDS`/geometry constants in that script to change them.
+Writes the same 4 files, but each a distinct solid background color
+with a black marker bar containing N white squares (N = camera
+number), so the camera number is identifiable by eye. Pure Python
+stdlib, no dependencies. Edit `BACKGROUNDS`/geometry constants in that
+script to change them. Note this overwrites the real-frame images
+above -- `git checkout firmware/` restores them.
 
 ## 2. Build
 

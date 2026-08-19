@@ -99,8 +99,12 @@ just unrouted on BeaglePlay's end.
   without MY-CAM004M hardware, independent of whether the real driver's
   register tables turn out to be right. Not part of the real driver --
   see `docs/fake-driver-testing.md`.
-- `tools/gen_fake_frames.py` -- generates the 4 reference images
-  `mycam004m-fake.c` serves (`firmware/mycam004m-fake/cam{1..4}.bin`).
+- `tools/gen_fake_frames.py` -- generates a synthetic solid-color/marker-
+  square variant of the 4 reference images `mycam004m-fake.c` serves
+  (`firmware/mycam004m-fake/cam{1..4}.bin`). The images currently
+  committed there are real captured frames from the car's 4 physical
+  cameras instead -- see `docs/fake-driver-testing.md` for how they
+  were produced and how to regenerate the synthetic version.
 - `scripts/select-camera-backend.sh` -- symlinks `/dev/mycam/cam1..4`
   to whichever backend (real or fake) is currently loaded, so the
   calling app's device paths never change between the two.
